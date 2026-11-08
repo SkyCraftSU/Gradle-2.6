@@ -1,0 +1,68 @@
+name: Verify and publish official Gradle 2.6
+
+on:
+  push:
+    paths:
+      - '.github/workflows/archive-gradle-2.6.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gradle-2.6-release
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download upstream Gradle 2.6
+        shell: bash
+        run: |
+          set -euo pipefail
+          for url in \
+            https://downloads.gradle.org/distributions/gradle-2.6-bin.zip \
+            https://services.gradle.org/distributions/gradle-2.6-bin.zip
+          do
+            if curl -fL --retry 5 --retry-all-errors --retry-delay 4 --connect-timeout 15 --max-time 240 "$url" -o gradle-2.6-bin.zip; then
+              break
+            fi
+          done
+          test -s gradle-2.6-bin.zip
+          for url in \
+            https://downloads.gradle.org/distributions/gradle-2.6-bin.zip.sha256 \
+            https://services.gradle.org/distributions/gradle-2.6-bin.zip.sha256
+          do
+            if curl -fL --retry 5 --retry-all-errors --retry-delay 4 --connect-timeout 15 --max-time 60 "$url" -o gradle-2.6-bin.zip.sha256; then
+              break
+            fi
+          done
+          test -s gradle-2.6-bin.zip.sha256
+          expected="$(tr -d '[:space:]' < gradle-2.6-bin.zip.sha256)"
+          [[ "$expected" =~ ^[a-fA-F0-9]{64}$ ]]
+          printf '%s  %s\n' "$expected" gradle-2.6-bin.zip | sha256sum -c -
+          unzip -tq gradle-2.6-bin.zip
+          unzip -Z -1 gradle-2.6-bin.zip | grep -qx 'gradle-2.6/bin/gradle'
+          echo "Official Gradle 2.6 ZIP verified"
+
+      - name: Publish immutable version archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v2.6 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if gh release view v2.6 --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qx 'gradle-2.6-bin.zip'; then
+              echo "Release v2.6 already has the distribution; refusing to overwrite it."
+              exit 0
+            fi
+            gh release upload v2.6 gradle-2.6-bin.zip gradle-2.6-bin.zip.sha256 --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create v2.6 gradle-2.6-bin.zip gradle-2.6-bin.zip.sha256 \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Gradle 2.6 (original binary distribution)" \
+              --notes "Verbatim upstream Gradle 2.6 bin distribution, verified against upstream SHA-256 and ZIP structure. No SkyCraft source changes."
+          fi
